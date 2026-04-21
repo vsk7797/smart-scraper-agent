@@ -1,6 +1,6 @@
 """Smart Scraper Agent models."""
 
-from models.schemas import (
+from .schemas import (
     ScrapeRequest,
     ExtractedField,
     ExtractedItem,
