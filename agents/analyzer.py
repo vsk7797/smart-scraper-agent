@@ -28,12 +28,13 @@ class PageAnalyzer:
         """Analyze a fetched page and return structured analysis."""
         system_prompt = (
             "You are a web page analyst. Given the text content and HTML structure of a web page, "
-            "analyze it and respond in JSON with these keys:\n"
+            "analyze it and respond in VALID JSON ONLY (no other text) with these keys:\n"
             "- page_type: string (e.g., 'product listing', 'article', 'table data', 'directory', 'search results')\n"
             "- data_elements: list of strings (types of data found, e.g., 'prices', 'names', 'dates')\n"
             "- suggested_extractions: list of strings (specific data points that could be extracted)\n"
             "- has_repeating_items: boolean (whether there are repeating patterns like product cards)\n"
             "- estimated_item_count: integer (how many repeating items are on the page)\n"
+            "\nIMPORTANT: Return ONLY valid JSON, no markdown or explanation."
         )
         user_prompt = (
             f"URL: {page_data['url']}\n"
@@ -89,14 +90,34 @@ class PageAnalyzer:
 
     @staticmethod
     def _extract_json(text: str) -> str:
+        """Extract JSON from text, handling markdown code blocks and other formats."""
         text = text.strip()
+        
+        # Handle markdown code blocks (```json ... ```)
         if text.startswith("```"):
             lines = text.split("\n")
-            start = 1
+            # Find first ``` line
+            start = 0
+            # Skip language identifier if present (e.g., ```json)
+            if lines[0].startswith("```"):
+                start = 1
+            
+            # Find closing ```
             end = len(lines)
             for i in range(len(lines) - 1, 0, -1):
                 if lines[i].strip().startswith("```"):
                     end = i
                     break
-            text = "\n".join(lines[start:end])
+            
+            text = "\n".join(lines[start:end]).strip()
+        
+        # Handle case where JSON might be wrapped in other text
+        # Try to find the JSON object/array
+        if not text.startswith(("{", "[")):
+            # Look for first { or [
+            for i, char in enumerate(text):
+                if char in ("{", "["):
+                    text = text[i:]
+                    break
+        
         return text.strip()

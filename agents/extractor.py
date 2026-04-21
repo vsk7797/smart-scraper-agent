@@ -78,8 +78,9 @@ class DataExtractor:
     def _build_system_prompt(self) -> str:
         return (
             "You are a precise web data extractor. Given a web page's content and a user's "
-            "description of what to extract, return the extracted data as JSON.\n\n"
-            "Response format:\n"
+            "description of what to extract, return the extracted data as VALID JSON only.\n\n"
+            "IMPORTANT: Return ONLY valid JSON, no other text before or after.\n\n"
+            "Response format (must be valid JSON):\n"
             "{\n"
             '  "items": [\n'
             "    {\n"
@@ -88,14 +89,17 @@ class DataExtractor:
             "      ]\n"
             "    }\n"
             "  ],\n"
-            '  "extraction_notes": "Any notes about the extraction"\n'
+            '  "extraction_notes": "Summary of what was extracted"\n'
             "}\n\n"
             "Rules:\n"
-            "1. Extract ONLY the data described by the user\n"
-            "2. Keep field names clean and consistent across items\n"
-            "3. Set confidence 0-1 based on how certain you are about each value\n"
-            "4. If a field is not found for an item, omit it\n"
-            "5. Return an empty items list if no matching data is found"
+            "1. Return ONLY valid JSON, nothing else\n"
+            "2. Extract ONLY the data described by the user\n"
+            "3. Keep field names clean and consistent across items\n"
+            "4. Set confidence 0-1 based on how certain you are about each value\n"
+            "5. If a field is not found for an item, omit it from that item\n"
+            "6. Return an empty items list [] if no matching data is found\n"
+            "7. Do not include any markdown, code blocks, or explanation\n"
+            "8. Ensure the JSON is properly formatted and valid"
         )
 
     def _build_user_prompt(
@@ -153,23 +157,43 @@ class DataExtractor:
     ) -> ExtractionResult:
         try:
             text = self._extract_json(raw)
-            data = json.loads(text)
+            
+            # Try to parse JSON
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                # If JSON parsing fails, return error with details
+                return ExtractionResult(
+                    url=url,
+                    description=description,
+                    items=[],
+                    total_items=0,
+                    page_title=title,
+                    extraction_notes=f"JSON parsing failed. Raw response: {raw[:300]}",
+                )
 
             items: list[ExtractedItem] = []
             for i, raw_item in enumerate(data.get("items", [])):
                 fields = []
                 for f in raw_item.get("fields", []):
+                    try:
+                        confidence = float(f.get("confidence", 0.5))
+                        confidence = max(0.0, min(1.0, confidence))
+                    except (ValueError, TypeError):
+                        confidence = 0.5
+                    
                     fields.append(
                         ExtractedField(
-                            name=f.get("name", "unknown"),
+                            name=str(f.get("name", "unknown")),
                             value=str(f.get("value", "")),
-                            confidence=max(0.0, min(1.0, float(f.get("confidence", 0.5)))),
-                            selector_hint=f.get("selector_hint", ""),
+                            confidence=confidence,
+                            selector_hint=str(f.get("selector_hint", "")),
                         )
                     )
-                items.append(
-                    ExtractedItem(fields=fields, source_url=url, item_index=i)
-                )
+                if fields:  # Only add item if it has fields
+                    items.append(
+                        ExtractedItem(fields=fields, source_url=url, item_index=i)
+                    )
 
             return ExtractionResult(
                 url=url,
@@ -179,26 +203,47 @@ class DataExtractor:
                 page_title=title,
                 extraction_notes=data.get("extraction_notes", ""),
             )
-        except (json.JSONDecodeError, KeyError, ValueError):
+        except Exception as e:
+            # Catch any other unexpected errors
             return ExtractionResult(
                 url=url,
                 description=description,
                 items=[],
                 total_items=0,
                 page_title=title,
-                extraction_notes=f"Failed to parse extraction. Raw: {raw[:200]}",
+                extraction_notes=f"Extraction failed: {str(e)[:200]}",
             )
 
     @staticmethod
     def _extract_json(text: str) -> str:
+        """Extract JSON from text, handling markdown code blocks and other formats."""
         text = text.strip()
+        
+        # Handle markdown code blocks (```json ... ```)
         if text.startswith("```"):
             lines = text.split("\n")
-            start = 1
+            # Find first ``` line
+            start = 0
+            # Skip language identifier if present (e.g., ```json)
+            if lines[0].startswith("```"):
+                start = 1
+            
+            # Find closing ```
             end = len(lines)
             for i in range(len(lines) - 1, 0, -1):
                 if lines[i].strip().startswith("```"):
                     end = i
                     break
-            text = "\n".join(lines[start:end])
+            
+            text = "\n".join(lines[start:end]).strip()
+        
+        # Handle case where JSON might be wrapped in other text
+        # Try to find the JSON object/array
+        if not text.startswith(("{", "[")):
+            # Look for first { or [
+            for i, char in enumerate(text):
+                if char in ("{", "["):
+                    text = text[i:]
+                    break
+        
         return text.strip()
